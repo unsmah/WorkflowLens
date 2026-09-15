@@ -3,6 +3,7 @@ package com.unsmah.workflowlens.ui
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -58,6 +59,7 @@ import java.util.Locale
  * zoom, double-tap to toggle 2.5x. Header shows the position counter, relative time and the
  * action text; per-image actions are Share and Delete.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun LightboxGalleryDialog(
     events: List<WorkflowEvent>,

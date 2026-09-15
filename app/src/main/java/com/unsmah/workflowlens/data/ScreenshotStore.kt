@@ -94,7 +94,7 @@ object ScreenshotStore {
         context: Context,
         bitmap: Bitmap,
         format: String = "JPEG",
-        quality: Int = DEFAULT_QUALITY,
+        quality: Int = AppPrefs.DEFAULT_QUALITY,
         maxDimension: Int = 0,
         overlay: OverlayConfig? = null
     ): String? {
