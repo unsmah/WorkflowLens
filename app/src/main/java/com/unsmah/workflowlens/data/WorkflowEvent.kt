@@ -21,5 +21,7 @@ data class WorkflowEvent(
     /** Absolute path of the stored screenshot file; empty if the capture failed. */
     @ColumnInfo(name = "imagePath") val imagePath: String,
     /** 1 when the user's global filter allowed this package, 0 otherwise (kept dimmed). */
-    @ColumnInfo(name = "tracked") val tracked: Int = 1
+    @ColumnInfo(name = "tracked") val tracked: Int = 1,
+    /** Why the screenshot is missing, if it is; null when the capture succeeded. */
+    @ColumnInfo(name = "failureNote") val failureNote: String? = null
 )

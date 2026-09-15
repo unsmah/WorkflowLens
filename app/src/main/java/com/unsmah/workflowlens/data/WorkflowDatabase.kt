@@ -11,7 +11,7 @@ import androidx.room.RoomDatabase
  */
 @Database(
     entities = [WorkflowEvent::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class WorkflowDatabase : RoomDatabase() {
@@ -28,7 +28,11 @@ abstract class WorkflowDatabase : RoomDatabase() {
                     context.applicationContext,
                     WorkflowDatabase::class.java,
                     "workflow_lens.db"
-                ).build().also { instance = it }
+                )
+                    // v1→v2 only adds a nullable failureNote column; wipe is fine for a
+                    // tracker timeline, but only because the feature is non-critical.
+                    .fallbackToDestructiveMigration()
+                    .build().also { instance = it }
             }
     }
 }

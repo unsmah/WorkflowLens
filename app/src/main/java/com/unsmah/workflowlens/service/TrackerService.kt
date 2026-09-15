@@ -44,6 +44,11 @@ class TrackerService : AccessibilityService() {
 
         const val MAX_TEXT_CHARS = 60
 
+        /** Grace period before capturing on window transitions (let the new app render). */
+        private const val WINDOW_CAPTURE_DELAY_MS = 400L
+        /** One retry for transient capture errors (mid-transition races). */
+        private const val CAPTURE_RETRY_DELAY_MS = 350L
+
         /** Pushes fresh prefs into the running service; no-op when it is not bound. */
         fun notifyFiltersChanged() {
             runCatching { instance?.reloadFilters() }
@@ -60,6 +65,9 @@ class TrackerService : AccessibilityService() {
     private var repository: WorkflowRepository? = null
 
     private val screenshotExecutor by lazy { HandlerExecutor(Handler(Looper.getMainLooper())) }
+
+    /** Schedules delayed captures for window transitions on the main looper. */
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     //region Lifecycle
     override fun onServiceConnected() {
@@ -123,8 +131,15 @@ class TrackerService : AccessibilityService() {
             }
         }
 
-        // 4) Async capture — returns immediately, keeping the binder thread free.
-        captureAndStore(repo, now, pkg, description)
+        // 4) Capture. Window-state events are delayed slightly: the system fires them while
+        //    the app transition is still in flight, and an instant capture can race the
+        //    swap (failing outright or shooting the old screen). Clicks fire while the UI
+        //    is stable, so those go out immediately.
+        val delayMs = if (isClick) 0L else WINDOW_CAPTURE_DELAY_MS
+        mainHandler.postDelayed({
+            if (!isRunning) return@postDelayed
+            captureAndStore(repo, now, pkg, description)
+        }, delayMs)
     }
 
     /**
@@ -166,7 +181,8 @@ class TrackerService : AccessibilityService() {
         repo: WorkflowRepository,
         timestamp: Long,
         pkg: String,
-        description: String
+        description: String,
+        attempt: Int = 1
     ) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
         try {
@@ -182,18 +198,33 @@ class TrackerService : AccessibilityService() {
                         } finally {
                             runCatching { screenshot.hardwareBuffer.close() }
                         }
-                        persist(repo, timestamp, pkg, description, bitmap)
+                        persist(repo, timestamp, pkg, description, bitmap,
+                            if (bitmap == null) "could not read the screen buffer" else null)
                     }
 
                     override fun onFailure(errorCode: Int) {
+                        val reason = when (errorCode) {
+                            ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "screen was mid-transition"
+                            ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "capture permission revoked"
+                            ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> "display unavailable"
+                            else -> "capture failed (code $errorCode)"
+                        }
+                        // INTERNAL_ERROR is the classic "fired during an app swap" race —
+                        // one short retry usually lands a clean frame of the new app.
+                        if (errorCode == ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR && attempt < 2) {
+                            mainHandler.postDelayed({
+                                if (isRunning) captureAndStore(repo, timestamp, pkg, description, attempt + 1)
+                            }, CAPTURE_RETRY_DELAY_MS)
+                            return
+                        }
                         android.util.Log.w("TrackerService", "screenshot failed: $errorCode")
-                        persist(repo, timestamp, pkg, description, null)
+                        persist(repo, timestamp, pkg, description, null, reason)
                     }
                 })
         } catch (t: Throwable) {
             // Can throw SecurityException if canTakeScreenshot was revoked at runtime.
             android.util.Log.e("TrackerService", "takeScreenshot threw", t)
-            persist(repo, timestamp, pkg, description, null)
+            persist(repo, timestamp, pkg, description, null, "capture threw ${t.javaClass.simpleName}")
         }
     }
 
@@ -203,11 +234,12 @@ class TrackerService : AccessibilityService() {
         timestamp: Long,
         pkg: String,
         description: String,
-        bitmap: Bitmap?
+        bitmap: Bitmap?,
+        failureNote: String?
     ) {
         scope.launch {
             try {
-                repo.record(timestamp, pkg, description, bitmap, tracked = true)
+                repo.record(timestamp, pkg, description, bitmap, tracked = true, failureNote = failureNote)
             } catch (t: Throwable) {
                 android.util.Log.e("TrackerService", "record failed", t)
             }

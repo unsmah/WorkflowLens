@@ -88,6 +88,23 @@ internal fun SettingsSheet(
 
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
+            // --- Capture notes -----------------------------------------------------
+            Text(
+                "About screenshots",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+            Text(
+                "Some apps (banking, private browser tabs) mark their windows secure, " +
+                        "which blocks any screenshot. Actions there are still logged — " +
+                        "only the image is missing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
             // --- App filter -----------------------------------------------------------
             Text(
                 if (excluded.isEmpty()) "Tracking all apps"

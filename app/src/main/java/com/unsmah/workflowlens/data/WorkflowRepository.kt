@@ -27,7 +27,8 @@ class WorkflowRepository(context: Context) {
         packageName: String,
         actionDescription: String,
         bitmap: Bitmap?,
-        tracked: Boolean
+        tracked: Boolean,
+        failureNote: String? = null
     ): Long? = withContext(Dispatchers.IO) {
         // 1) Blob first — if the image cannot be written we still keep the metadata.
         val imagePath = bitmap?.let { ScreenshotStore.save(appContext, it) }.orEmpty()
@@ -38,7 +39,8 @@ class WorkflowRepository(context: Context) {
                 packageName = packageName,
                 actionDescription = actionDescription,
                 imagePath = imagePath,
-                tracked = if (tracked) 1 else 0
+                tracked = if (tracked) 1 else 0,
+                failureNote = failureNote
             )
         )
         // 3) Retention piggy-backs on every record call so no scheduler is needed.

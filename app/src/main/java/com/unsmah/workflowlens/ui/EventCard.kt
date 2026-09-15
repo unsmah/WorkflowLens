@@ -59,6 +59,14 @@ internal fun EventCard(
                     style = MaterialTheme.typography.bodyLarge,
                     maxLines = 2, overflow = TextOverflow.Ellipsis
                 )
+                if (event.imagePath.isBlank() && event.failureNote != null) {
+                    Text(
+                        "No screenshot: ${event.failureNote}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     icon?.let {
                         val bmp = remember(it) {
