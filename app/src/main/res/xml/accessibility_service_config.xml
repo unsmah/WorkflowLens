@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Configuration for TrackerService.
+
+    - canTakeScreenshot is what unlocks AccessibilityService.takeScreenshot() (API 30+);
+      without it every capture request is rejected with ERROR_TAKE_SCREENSHOT_ACCESS_DISABLED.
+    - Only click and window-state events are requested, so the service wakes as rarely as
+      possible. The user can tighten the package filter further from the app's dashboard.
+    - No retrieval of passwords (flag off) and no feedback: this tracker is read-only.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeViewClicked|typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
+    android:description="@string/service_description"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.unsmah.workflowlens.ui.MainActivity" />

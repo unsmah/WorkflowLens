@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Workflow Lens</string>
+    <string name="service_label">Workflow Lens tracker</string>
+    <string name="service_description">Records when you tap things and what you open, with a screenshot, in a private on-device timeline. No data leaves the device.</string>
+    <string name="action_clicked">Clicked</string>
+    <string name="action_opened">Opened</string>
+</resources>
