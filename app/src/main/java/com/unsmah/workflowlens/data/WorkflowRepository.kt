@@ -42,7 +42,7 @@ class WorkflowRepository(context: Context) {
             )
         )
         // 3) Retention piggy-backs on every record call so no scheduler is needed.
-        RetentionManager.enforce(appContext, dao)
+        RetentionManager.enforce(appContext, dao, maxAgeDays = AppPrefs.retentionDays(appContext).toLong())
         id
     }
 

@@ -1,10 +1,8 @@
 package com.unsmah.workflowlens.service
 
 import android.accessibilityservice.AccessibilityService
-import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Handler
@@ -12,6 +10,7 @@ import android.os.Looper
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import com.unsmah.workflowlens.R
+import com.unsmah.workflowlens.data.AppPrefs
 import com.unsmah.workflowlens.data.WorkflowRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,83 +21,184 @@ import kotlinx.coroutines.launch
  * Component A. Listens for clicks and window transitions, builds a semantic sentence from
  * the event, captures the screen and stores both via [WorkflowRepository].
  *
- * Lifecycle notes
- *  - The system binds/unbinds this service; a bound service has no onCreated/onDestroyed
- *    guarantee pair like activities, so the repository handle is (re)created lazily in
- *    onServiceConnected and cleared in onDestroy/onUnbind.
- *  - takeScreenshot() result arrives on [screenshotExecutor]; the DB write itself happens
- *    on Dispatchers.IO inside a coroutine (see [onScreenshot]).
+ * Threading model:
+ *  - onAccessibilityEvent runs on the system's binder thread: it only reads event fields,
+ *    fires the async screenshot and returns (never blocks, never touches storage).
+ *  - takeScreenshot delivers on [screenshotExecutor] (main looper). We copy the hardware
+ *    buffer into an immutable bitmap there and hop to Dispatchers.IO for file + DB writes.
+ *
+ * Fail-safe policy: capture failures and bitmap conversion nulls still record the action —
+ * only the image is missing, the timeline never loses the row.
  */
 class TrackerService : AccessibilityService() {
+
+    companion object {
+        @Volatile
+        var isRunning: Boolean = false
+            private set
+
+        /** Live instance (when the system has the service bound) for pushing filter updates. */
+        @Volatile
+        var instance: TrackerService? = null
+            private set
+
+        const val MAX_TEXT_CHARS = 60
+
+        /** Pushes fresh prefs into the running service; no-op when it is not bound. */
+        fun notifyFiltersChanged() {
+            runCatching { instance?.reloadFilters() }
+        }
+    }
+
+    /** User-configurable package filter; empty set = track everything. */
+    private val allowedPackages = HashSet<String>()
+
+    /** Dedupes rapid-fire window events (focus storms etc.) within a short window. */
+    private val recentKeys = LinkedHashMap<String, Long>()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var repository: WorkflowRepository? = null
 
-    private val screenshotExecutor by lazy {
-        HandlerExecutor(Handler(Looper.getMainLooper()))
-    }
+    private val screenshotExecutor by lazy { HandlerExecutor(Handler(Looper.getMainLooper())) }
 
-    /** User-maintained blocklist broadcast from the dashboard (package -> track/dim). */
-    private val filterReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action != ACTION_FILTERS_CHANGED) return
-            val newAllowed = intent.getStringArrayListExtra(EXTRA_ALLOWED) ?: return
-            allowedPackages = newAllowed.toSet()
+    //region Lifecycle
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        try {
+            repository = WorkflowRepository.get(this)
+            reloadFilters()
+            isRunning = true
+            instance = this
+        } catch (t: Throwable) {
+            // A crash here would silently kill tracking; log and keep the service alive.
+            android.util.Log.e("TrackerService", "onServiceConnected failed", t)
         }
     }
 
-    private var allowedPackages: Set<String> = emptySet()
-
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        repository = WorkflowRepository.get(this)
-        registerReceiver(filterReceiver, IntentFilter(ACTION_FILTERS_CHANGED))
-    }
-
     override fun onDestroy() {
-        runCatching { unregisterReceiver(filterReceiver) }
+        isRunning = false
+        instance = null
         repository = null
         super.onDestroy()
     }
 
     override fun onInterrupt() {
-        // Required override; nothing to interrupt — we only listen.
+        // Required override; we only listen, nothing to interrupt.
+    }
+    //endregion
+
+    /** Re-reads the user's package filter from prefs (called on connect and on changes). */
+    fun reloadFilters() {
+        allowedPackages.clear()
+        allowedPackages.addAll(AppPrefs.allowed(this))
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val current = repository ?: return
+        if (!isRunning) return
         val e = event ?: return
-        if (e.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED &&
-            e.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-        ) return
+        val repo = repository ?: return
 
+        val isClick = e.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED
+        val isWindow = e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+        if (!isClick && !isWindow) return
+
+        // 1) Package + filter. The tracker itself and system UI are never recorded.
         val pkg = e.packageName?.toString() ?: return
-        val description = describe(e) ?: return // nothing human-readable -> don't log noise
+        if (pkg == packageName || pkg == "com.android.systemui") return
+        if (allowedPackages.isNotEmpty() && pkg !in allowedPackages) return
+
+        // 2) Semantic description; falls back through text -> description -> class name.
+        val description = describe(e, isClick) ?: return
+
+        // 3) Dedupe repeated window events (keyboard show/hide, focus storms).
+        val key = "$pkg/$description/${e.eventType}"
         val now = System.currentTimeMillis()
+        synchronized(recentKeys) {
+            val last = recentKeys[key]
+            if (!isClick && last != null && now - last < 1500) return
+            recentKeys[key] = now
+            if (recentKeys.size > 24) {
+                val it = recentKeys.entries.iterator()
+                repeat(8) { if (it.hasNext()) { it.next(); it.remove() } }
+            }
+        }
 
-        // 1) Fire the async screenshot; the DB write happens in the callback, so the
-        //    accessibility thread is never blocked by storage.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            takeScreenshot(Display.DEFAULT_DISPLAY, screenshotExecutor,
-                object : TakeScreenshotCallback {
-                    override fun onSuccess(screenshot: ScreenshotResult) {
-                        val bitmap = Bitmap.wrapHardwareBuffer(
-                            screenshot.hardwareBuffer, screenshot.colorSpace
-                        )?.copy(Bitmap.Config.ARGB_8888, false)
-                        screenshot.hardwareBuffer.close()
-                        onScreenshot(current, now, pkg, description, bitmap)
-                    }
+        // 4) Async capture — returns immediately, keeping the binder thread free.
+        captureAndStore(repo, now, pkg, description)
+    }
 
-                    override fun onFailure(errorCode: Int) {
-                        // Still log the action — only the image is missing.
-                        onScreenshot(current, now, pkg, description, null)
-                    }
-                })
+    /**
+     * Builds "Clicked \"Submit\" (Button)" / "Opened Chrome" style sentences.
+     * Falls back through: event text -> content-description -> class-derived label, and
+     * only returns null when the event truly has no identifying information (rare).
+     */
+    private fun describe(e: AccessibilityEvent, isClick: Boolean): String? {
+        val text = e.text.orEmpty().joinToString(" ") { it?.toString() ?: "" }.trim()
+        val desc = e.contentDescription?.toString()?.trim().orEmpty()
+        val rawClass = e.className?.toString().orEmpty()
+        val simple = rawClass.substringAfterLast('.')
+
+        val verb = if (isClick) getString(R.string.action_clicked)
+        else getString(R.string.action_opened)
+
+        val subject = when {
+            text.isNotBlank() -> "\"${text.take(MAX_TEXT_CHARS)}\""
+            desc.isNotBlank() -> "\"${desc.take(MAX_TEXT_CHARS)}\""
+            else -> ""
+        }
+
+        return when {
+            subject.isNotBlank() && simple.isNotBlank() -> "$verb $subject ($simple)"
+            subject.isNotBlank() -> "$verb $subject"
+            simple.isNotBlank() -> "$verb a $simple element"
+            isClick -> "$verb something"
+            else -> null
         }
     }
 
-    /** Runs on the executor thread; hops into IO to persist row + blob. */
-    private fun onScreenshot(
+    //region Screenshot + persistence
+    /**
+     * Fires the asynchronous screen capture. The callback lands on the main-looper
+     * executor; from there we hop to Dispatchers.IO so the Room transaction and the JPEG
+     * write never block the looper. See the class kdoc for the full threading map.
+     */
+    private fun captureAndStore(
+        repo: WorkflowRepository,
+        timestamp: Long,
+        pkg: String,
+        description: String
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        try {
+            takeScreenshot(Display.DEFAULT_DISPLAY, screenshotExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        val bitmap: Bitmap? = try {
+                            Bitmap.wrapHardwareBuffer(
+                                screenshot.hardwareBuffer, screenshot.colorSpace
+                            )?.copy(Bitmap.Config.ARGB_8888, false)
+                        } catch (t: Throwable) {
+                            null
+                        } finally {
+                            runCatching { screenshot.hardwareBuffer.close() }
+                        }
+                        persist(repo, timestamp, pkg, description, bitmap)
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        android.util.Log.w("TrackerService", "screenshot failed: $errorCode")
+                        persist(repo, timestamp, pkg, description, null)
+                    }
+                })
+        } catch (t: Throwable) {
+            // Can throw SecurityException if canTakeScreenshot was revoked at runtime.
+            android.util.Log.e("TrackerService", "takeScreenshot threw", t)
+            persist(repo, timestamp, pkg, description, null)
+        }
+    }
+
+    /** Runs on the main-looper executor; hops to IO so storage never blocks the looper. */
+    private fun persist(
         repo: WorkflowRepository,
         timestamp: Long,
         pkg: String,
@@ -106,30 +206,12 @@ class TrackerService : AccessibilityService() {
         bitmap: Bitmap?
     ) {
         scope.launch {
-            val tracked = pkg in allowedPackages || allowedPackages.isEmpty()
-            repo.record(timestamp, pkg, description, bitmap, tracked)
+            try {
+                repo.record(timestamp, pkg, description, bitmap, tracked = true)
+            } catch (t: Throwable) {
+                android.util.Log.e("TrackerService", "record failed", t)
+            }
         }
     }
-
-    /** "Clicked 'Submit' in Chrome" / "Opened com.example.app". */
-    private fun describe(e: AccessibilityEvent): String? {
-        val text = e.text.orEmpty().joinToString(" ") { it.toString() }.trim()
-        val cls = e.className?.toString()?.substringAfterLast('.') ?: ""
-        val verb = if (e.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            getString(R.string.action_clicked)
-        } else {
-            getString(R.string.action_opened)
-        }
-        return when {
-            text.isNotBlank() && cls.isNotBlank() -> "$verb '$text' ($cls)"
-            text.isNotBlank() -> "$verb '$text'"
-            cls.isNotBlank() -> "$verb a $cls"
-            else -> null
-        }
-    }
-
-    companion object {
-        const val ACTION_FILTERS_CHANGED = "com.unsmah.workflowlens.FILTERS_CHANGED"
-        const val EXTRA_ALLOWED = "allowed_packages"
-    }
+    //endregion
 }

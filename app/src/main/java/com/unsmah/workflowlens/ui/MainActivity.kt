@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,6 +32,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.unsmah.workflowlens.data.WorkflowEvent
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -63,15 +65,32 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
     val events by viewModel.timeline.collectAsStateWithLifecycle()
     val enabled by viewModel.trackerEnabled.collectAsStateWithLifecycle()
     val storageBytes by viewModel.storageBytes.collectAsStateWithLifecycle()
+    val excluded by viewModel.excludedPackages.collectAsStateWithLifecycle()
+    val retentionDays by viewModel.retentionDays.collectAsStateWithLifecycle()
+    val testCaptureDone by viewModel.testCaptureDone.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var lightboxPath by remember { mutableStateOf<String?>(null) }
+    var showSettings by remember { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf(false) }
+
+    // Flash a confirmation when the test event lands.
+    LaunchedEffect(testCaptureDone) {
+        if (testCaptureDone) {
+            snackbar.showSnackbar("Test event recorded — the pipeline works!")
+            viewModel.resetTestCaptureFlag()
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Workflow Lens") },
                 actions = {
-                    IconButton(onClick = { viewModel.clearHistory() }) {
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                    IconButton(onClick = { confirmClear = true }) {
                         Icon(Icons.Default.DeleteSweep, contentDescription = "Clear history")
                     }
                 }
@@ -97,7 +116,7 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
             )
 
             if (events.isEmpty()) {
-                EmptyState()
+                EmptyState(enabled = enabled, onTest = { viewModel.testCapture() })
             } else {
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -109,6 +128,31 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
                 }
             }
         }
+    }
+
+    if (showSettings) {
+        SettingsSheet(
+            viewModel = viewModel,
+            excluded = excluded,
+            retentionDays = retentionDays,
+            onDismiss = { showSettings = false }
+        )
+    }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("Clear all history?") },
+            text = { Text("Every event and screenshot will be deleted permanently. This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmClear = false
+                    viewModel.clearHistory()
+                    scope.launch { snackbar.showSnackbar("History cleared") }
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } }
+        )
     }
 
     lightboxPath?.let { path ->
@@ -166,19 +210,26 @@ internal fun TrackerCard(enabled: Boolean, storageBytes: Long, onToggle: () -> U
 }
 
 @Composable
-internal fun EmptyState() {
+internal fun EmptyState(enabled: Boolean, onTest: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(top = 40.dp),
+            .padding(top = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text("Nothing captured yet", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Turn on tracking and interact with any app —\nevents will appear here.",
+            if (enabled) "Interact with any app — events will appear here.\n" +
+                    "If nothing shows up, record a test event below to verify the pipeline."
+            else "Turn on tracking and interact with any app —\nevents will appear here.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 4.dp)
         )
+        if (enabled) {
+            OutlinedButton(onClick = onTest, modifier = Modifier.padding(top = 12.dp)) {
+                Text("Record a test event")
+            }
+        }
     }
 }
