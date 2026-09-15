@@ -23,6 +23,21 @@ interface WorkflowEventDao {
     @Query("DELETE FROM workflow_events WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
 
+    @Query("DELETE FROM workflow_events WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
     @Query("DELETE FROM workflow_events")
     suspend fun clearAll()
+
+    /** Single row fetch (lightbox delete / overlay tools). */
+    @Query("SELECT * FROM workflow_events WHERE id = :id")
+    suspend fun byId(id: Long): WorkflowEvent?
+
+    /** Overlay re-render: point the row at the newly encoded file. */
+    @Query("UPDATE workflow_events SET imagePath = :path WHERE id = :id")
+    suspend fun updateImagePath(id: Long, path: String)
+
+    /** One-shot list read (overlay tool); the dashboard itself uses the Flow. */
+    @Query("SELECT * FROM workflow_events ORDER BY timestamp DESC")
+    suspend fun observeTimelineSnapshot(): List<WorkflowEvent>
 }

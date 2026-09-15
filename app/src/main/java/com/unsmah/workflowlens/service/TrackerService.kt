@@ -43,9 +43,6 @@ class TrackerService : AccessibilityService() {
             private set
 
         const val MAX_TEXT_CHARS = 60
-
-        /** Grace period before capturing on window transitions (let the new app render). */
-        private const val WINDOW_CAPTURE_DELAY_MS = 400L
         /** One retry for transient capture errors (mid-transition races). */
         private const val CAPTURE_RETRY_DELAY_MS = 350L
 
@@ -57,6 +54,11 @@ class TrackerService : AccessibilityService() {
 
     /** User-configurable package filter; empty set = track everything. */
     private val allowedPackages = HashSet<String>()
+
+    /** Cached capture prefs (reloaded in [reloadFilters], never read per event). */
+    @Volatile private var recordClicks = true
+    @Volatile private var recordWindow = true
+    @Volatile private var windowDelayMs = 400L
 
     /** Dedupes rapid-fire window events (focus storms etc.) within a short window. */
     private val recentKeys = LinkedHashMap<String, Long>()
@@ -95,10 +97,13 @@ class TrackerService : AccessibilityService() {
     }
     //endregion
 
-    /** Re-reads the user's package filter from prefs (called on connect and on changes). */
+    /** Re-reads all runtime settings (called on connect and whenever settings change). */
     fun reloadFilters() {
         allowedPackages.clear()
         allowedPackages.addAll(AppPrefs.allowed(this))
+        recordClicks = AppPrefs.recordClicks(this)
+        recordWindow = AppPrefs.recordWindow(this)
+        windowDelayMs = AppPrefs.windowDelayMs(this).coerceIn(0, 2000).toLong()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -109,6 +114,9 @@ class TrackerService : AccessibilityService() {
         val isClick = e.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED
         val isWindow = e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
         if (!isClick && !isWindow) return
+        // User-captured behaviour prefs (cached in reloadFilters, never read per event).
+        if (isClick && !recordClicks) return
+        if (isWindow && !recordWindow) return
 
         // 1) Package + filter. The tracker itself and system UI are never recorded.
         val pkg = e.packageName?.toString() ?: return
@@ -134,8 +142,8 @@ class TrackerService : AccessibilityService() {
         // 4) Capture. Window-state events are delayed slightly: the system fires them while
         //    the app transition is still in flight, and an instant capture can race the
         //    swap (failing outright or shooting the old screen). Clicks fire while the UI
-        //    is stable, so those go out immediately.
-        val delayMs = if (isClick) 0L else WINDOW_CAPTURE_DELAY_MS
+        //    is stable, so those go out immediately. The delay is user-configurable.
+        val delayMs = if (isClick) 0L else windowDelayMs
         mainHandler.postDelayed({
             if (!isRunning) return@postDelayed
             captureAndStore(repo, now, pkg, description)

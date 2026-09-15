@@ -99,6 +99,57 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
         _retentionDays.value = clamped
     }
 
+    // --- v1.3 capture / image / overlay settings -----------------------------
+
+    fun setRecordClicks(on: Boolean) {
+        AppPrefs.setRecordClicks(getApplication(), on)
+        com.unsmah.workflowlens.service.TrackerService.notifyFiltersChanged()
+    }
+
+    fun setRecordWindow(on: Boolean) {
+        AppPrefs.setRecordWindow(getApplication(), on)
+        com.unsmah.workflowlens.service.TrackerService.notifyFiltersChanged()
+    }
+
+    fun setWindowDelayMs(ms: Int) {
+        AppPrefs.setWindowDelayMs(getApplication(), ms.coerceIn(0, 1000))
+        com.unsmah.workflowlens.service.TrackerService.notifyFiltersChanged()
+    }
+
+    fun setImageFormat(format: String) {
+        AppPrefs.setImageFormat(getApplication(), format)
+    }
+
+    fun setImageQuality(quality: Int) {
+        AppPrefs.setImageQuality(getApplication(), quality)
+    }
+
+    fun setMaxDimension(value: Int) {
+        AppPrefs.setMaxDimension(getApplication(), value)
+    }
+
+    fun setOverlayEnabled(on: Boolean) {
+        AppPrefs.setOverlayEnabled(getApplication(), on)
+    }
+
+    fun setOverlayPosition(bottom: Boolean) {
+        AppPrefs.setOverlayPosition(getApplication(), if (bottom) "bottom" else "top")
+    }
+
+    fun setOverlayShowTime(on: Boolean) = AppPrefs.setOverlayShowTime(getApplication(), on)
+
+    fun setOverlayShowApp(on: Boolean) = AppPrefs.setOverlayShowApp(getApplication(), on)
+
+    fun setOverlayShowAction(on: Boolean) = AppPrefs.setOverlayShowAction(getApplication(), on)
+
+    fun setOverlayTextScale(percent: Int) {
+        AppPrefs.setOverlayTextScale(getApplication(), percent)
+    }
+
+    fun setQuotaMb(mb: Int) {
+        AppPrefs.setQuotaMb(getApplication(), mb)
+    }
+
     /** Clears the one-shot test-capture flag after its snackbar showed. */
     fun resetTestCaptureFlag() {
         _testCaptureDone.value = false
@@ -131,6 +182,24 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearHistory() {
         viewModelScope.launch(Dispatchers.IO) { repository.clearAll() }
+    }
+
+    /** Deletes one event (row + its screenshot file); used by the lightbox delete action. */
+    fun deleteEvent(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.deleteEvent(id)
+        }
+    }
+
+    /**
+     * Re-encodes every stored screenshot with the current overlay settings so old images
+     * match the new caption style. Reports the number processed when finished.
+     */
+    fun overlayHistory(onDone: (Int) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val n = repository.overlayAllWithCurrentOverlay()
+            withContext(Dispatchers.Main) { onDone(n) }
+        }
     }
 
     /** Icon for a package, cached in memory; null when the app is gone/uninstalled. */

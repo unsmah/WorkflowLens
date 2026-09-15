@@ -65,12 +65,10 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
     val events by viewModel.timeline.collectAsStateWithLifecycle()
     val enabled by viewModel.trackerEnabled.collectAsStateWithLifecycle()
     val storageBytes by viewModel.storageBytes.collectAsStateWithLifecycle()
-    val excluded by viewModel.excludedPackages.collectAsStateWithLifecycle()
-    val retentionDays by viewModel.retentionDays.collectAsStateWithLifecycle()
     val testCaptureDone by viewModel.testCaptureDone.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    var lightboxPath by remember { mutableStateOf<String?>(null) }
+    var lightboxId by remember { mutableStateOf<Long?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
 
@@ -123,7 +121,7 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
                     contentPadding = PaddingValues(bottom = 24.dp)
                 ) {
                     items(events, key = { it.id }) { event ->
-                        EventCard(event, viewModel) { lightboxPath = event.imagePath }
+                        EventCard(event, viewModel) { lightboxId = event.id }
                     }
                 }
             }
@@ -133,8 +131,6 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
     if (showSettings) {
         SettingsSheet(
             viewModel = viewModel,
-            excluded = excluded,
-            retentionDays = retentionDays,
             onDismiss = { showSettings = false }
         )
     }
@@ -155,8 +151,14 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
         )
     }
 
-    lightboxPath?.let { path ->
-        LightboxDialog(path) { lightboxPath = null }
+    lightboxId?.let { id ->
+        val startIndex = events.indexOfFirst { it.id == id }.coerceAtLeast(0)
+        LightboxGalleryDialog(
+            events = events.filter { it.imagePath.isNotBlank() },
+            startIndex = startIndex,
+            onDismiss = { lightboxId = null },
+            onDelete = { event -> viewModel.deleteEvent(event.id) }
+        )
     }
 }
 

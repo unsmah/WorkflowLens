@@ -28,6 +28,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Lets the lightbox "Share" action hand a screenshot to other apps securely. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!--
             The tracker. BIND_ACCESSIBILITY_SERVICE is the permission the *system* holds that
             lets it bind to this service; the user still has to switch the service on in
