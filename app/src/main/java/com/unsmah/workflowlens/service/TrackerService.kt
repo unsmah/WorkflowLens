@@ -118,8 +118,8 @@ class TrackerService : AccessibilityService() {
             if (!isClick && last != null && now - last < 1500) return
             recentKeys[key] = now
             if (recentKeys.size > 24) {
-                val it = recentKeys.entries.iterator()
-                repeat(8) { if (it.hasNext()) { it.next(); it.remove() } }
+                val itr = recentKeys.entries.iterator()
+                repeat(8) { if (itr.hasNext()) { itr.next(); itr.remove() } }
             }
         }
 
