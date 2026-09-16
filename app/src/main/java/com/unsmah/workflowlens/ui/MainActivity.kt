@@ -1,41 +1,27 @@
 package com.unsmah.workflowlens.ui
 
-import android.graphics.BitmapFactory
-import android.graphics.drawable.Drawable
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Accessibility
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.unsmah.workflowlens.data.WorkflowEvent
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /** Component C: Material 3 dashboard — service toggle, timeline, light-box viewer. */
 class MainActivity : ComponentActivity() {
@@ -45,7 +31,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            WorkflowLensTheme {
+            val theme by viewModel.theme.collectAsStateWithLifecycle()
+            WorkflowLensTheme(mode = theme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Dashboard(viewModel)
                 }
@@ -65,11 +52,15 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
     val events by viewModel.timeline.collectAsStateWithLifecycle()
     val enabled by viewModel.trackerEnabled.collectAsStateWithLifecycle()
     val storageBytes by viewModel.storageBytes.collectAsStateWithLifecycle()
+    val paused by viewModel.paused.collectAsStateWithLifecycle()
+    val timeMode by viewModel.timeMode.collectAsStateWithLifecycle()
+    val selection by viewModel.selection.collectAsStateWithLifecycle()
     val testCaptureDone by viewModel.testCaptureDone.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    var tab by remember { mutableStateOf(0) } // 0 = timeline, 1 = stats, 2 = settings
     var lightboxId by remember { mutableStateOf<Long?>(null) }
-    var showSettings by remember { mutableStateOf(false) }
+    var showLegacySheet by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
 
     // Flash a confirmation when the test event lands.
@@ -85,14 +76,44 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
             TopAppBar(
                 title = { Text("Workflow Lens") },
                 actions = {
-                    IconButton(onClick = { showSettings = true }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    if (selection.isNotEmpty()) {
+                        IconButton(onClick = {
+                            viewModel.shareSelected(viewModel.getApp())
+                        }) {
+                            Icon(Icons.Default.Share, contentDescription = "Share selected")
+                        }
+                        IconButton(onClick = {
+                            viewModel.deleteSelected { n ->
+                                scope.launch { snackbar.showSnackbar("Deleted $n events") }
+                            }
+                        }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete selected")
+                        }
+                    }
+                    IconButton(onClick = { viewModel.setPaused(!paused) }) {
+                        Icon(
+                            if (paused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                            contentDescription = if (paused) "Resume tracking" else "Pause tracking"
+                        )
                     }
                     IconButton(onClick = { confirmClear = true }) {
                         Icon(Icons.Default.DeleteSweep, contentDescription = "Clear history")
                     }
                 }
             )
+        },
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = tab == 0, onClick = { tab = 0 },
+                    icon = { Icon(Icons.AutoMirrored.Filled.List, null) }, label = { Text("Timeline") })
+                NavigationBarItem(
+                    selected = tab == 1, onClick = { tab = 1 },
+                    icon = { Icon(Icons.Default.BarChart, null) }, label = { Text("Stats") })
+                NavigationBarItem(
+                    selected = tab == 2, onClick = { tab = 2 },
+                    icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
+            }
         },
         snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
@@ -102,44 +123,35 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
                 .fillMaxSize()
                 .padding(horizontal = 16.dp)
         ) {
-            TrackerCard(
-                enabled = enabled, storageBytes = storageBytes,
-                onToggle = { if (!enabled) viewModel.openAccessibilitySettings() }
-            )
-
-            Text(
-                "Activity timeline",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
-            )
-
-            if (events.isEmpty()) {
-                EmptyState(enabled = enabled, onTest = { viewModel.testCapture() })
-            } else {
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(bottom = 24.dp)
-                ) {
-                    items(events, key = { it.id }) { event ->
-                        EventCard(event, viewModel) { lightboxId = event.id }
-                    }
+            when (tab) {
+                0 -> {
+                    TrackerCard(
+                        enabled = enabled, paused = paused, storageBytes = storageBytes,
+                        onToggle = { if (!enabled) viewModel.openAccessibilitySettings() }
+                    )
+                    TimelineTab(
+                        viewModel = viewModel, enabled = enabled, timeMode = timeMode,
+                        onOpenLightbox = { lightboxId = it },
+                        onTest = { viewModel.testCapture() },
+                        snackbar = snackbar
+                    )
                 }
+                1 -> StatsScreen(viewModel)
+                else -> SettingsTab(viewModel, onOpenLegacySheet = { showLegacySheet = true })
             }
         }
     }
 
-    if (showSettings) {
-        SettingsSheet(
-            viewModel = viewModel,
-            onDismiss = { showSettings = false }
-        )
+    if (showLegacySheet) {
+        SettingsSheet(viewModel = viewModel, onDismiss = { showLegacySheet = false })
     }
 
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Clear all history?") },
-            text = { Text("Every event and screenshot will be deleted permanently. This cannot be undone.") },
+            text = { Text("Every event and screenshot will be deleted permanently. " +
+                "This cannot be undone.") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmClear = false
@@ -152,9 +164,10 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
     }
 
     lightboxId?.let { id ->
-        val startIndex = events.indexOfFirst { it.id == id }.coerceAtLeast(0)
+        val filtered = events.filter { it.imagePath.isNotBlank() }
+        val startIndex = filtered.indexOfFirst { it.id == id }.coerceAtLeast(0)
         LightboxGalleryDialog(
-            events = events.filter { it.imagePath.isNotBlank() },
+            events = filtered,
             startIndex = startIndex,
             onDismiss = { lightboxId = null },
             onDelete = { event -> viewModel.deleteEvent(event.id) }
@@ -163,7 +176,7 @@ internal fun Dashboard(viewModel: TimelineViewModel) {
 }
 
 @Composable
-internal fun TrackerCard(enabled: Boolean, storageBytes: Long, onToggle: () -> Unit) {
+internal fun TrackerCard(enabled: Boolean, paused: Boolean, storageBytes: Long, onToggle: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -195,8 +208,9 @@ internal fun TrackerCard(enabled: Boolean, storageBytes: Long, onToggle: () -> U
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    if (enabled) "Capturing clicks and screens"
-                    else "Tap to open Accessibility settings",
+                    if (!enabled) "Tap to open Accessibility settings"
+                    else if (paused) "Paused — tap the play icon to resume"
+                    else "Capturing clicks and screens",
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1, overflow = TextOverflow.Ellipsis
                 )

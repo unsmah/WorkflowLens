@@ -59,6 +59,8 @@ class TrackerService : AccessibilityService() {
     @Volatile private var recordClicks = true
     @Volatile private var recordWindow = true
     @Volatile private var windowDelayMs = 400L
+    @Volatile private var isPaused = false
+    @Volatile private var skipScreenOff = true
 
     /** Dedupes rapid-fire window events (focus storms etc.) within a short window. */
     private val recentKeys = LinkedHashMap<String, Long>()
@@ -70,6 +72,12 @@ class TrackerService : AccessibilityService() {
 
     /** Schedules delayed captures for window transitions on the main looper. */
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** True when the display is on/interactive; cheap, safe to call per event. */
+    private fun isScreenOn(): Boolean = runCatching {
+        val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+        @Suppress("DEPRECATION") pm.isInteractive
+    }.getOrDefault(true)
 
     //region Lifecycle
     override fun onServiceConnected() {
@@ -104,12 +112,15 @@ class TrackerService : AccessibilityService() {
         recordClicks = AppPrefs.recordClicks(this)
         recordWindow = AppPrefs.recordWindow(this)
         windowDelayMs = AppPrefs.windowDelayMs(this).coerceIn(0, 2000).toLong()
+        isPaused = AppPrefs.paused(this)
+        skipScreenOff = AppPrefs.skipScreenOff(this)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (!isRunning) return
+        if (!isRunning || isPaused) return
         val e = event ?: return
         val repo = repository ?: return
+        if (skipScreenOff && !isScreenOn()) return
 
         val isClick = e.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED
         val isWindow = e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
@@ -144,9 +155,10 @@ class TrackerService : AccessibilityService() {
         //    swap (failing outright or shooting the old screen). Clicks fire while the UI
         //    is stable, so those go out immediately. The delay is user-configurable.
         val delayMs = if (isClick) 0L else windowDelayMs
+        val type = if (isClick) "click" else "switch"
         mainHandler.postDelayed({
-            if (!isRunning) return@postDelayed
-            captureAndStore(repo, now, pkg, description)
+            if (!isRunning || isPaused) return@postDelayed
+            captureAndStore(repo, now, pkg, description, eventType = type)
         }, delayMs)
     }
 
@@ -190,6 +202,7 @@ class TrackerService : AccessibilityService() {
         timestamp: Long,
         pkg: String,
         description: String,
+        eventType: String = "click",
         attempt: Int = 1
     ) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
@@ -207,7 +220,7 @@ class TrackerService : AccessibilityService() {
                             runCatching { screenshot.hardwareBuffer.close() }
                         }
                         persist(repo, timestamp, pkg, description, bitmap,
-                            if (bitmap == null) "could not read the screen buffer" else null)
+                            if (bitmap == null) "could not read the screen buffer" else null, eventType)
                     }
 
                     override fun onFailure(errorCode: Int) {
@@ -221,18 +234,18 @@ class TrackerService : AccessibilityService() {
                         // one short retry usually lands a clean frame of the new app.
                         if (errorCode == ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR && attempt < 2) {
                             mainHandler.postDelayed({
-                                if (isRunning) captureAndStore(repo, timestamp, pkg, description, attempt + 1)
+                                if (isRunning) captureAndStore(repo, timestamp, pkg, description, eventType, attempt + 1)
                             }, CAPTURE_RETRY_DELAY_MS)
                             return
                         }
                         android.util.Log.w("TrackerService", "screenshot failed: $errorCode")
-                        persist(repo, timestamp, pkg, description, null, reason)
+                        persist(repo, timestamp, pkg, description, null, reason, eventType)
                     }
                 })
         } catch (t: Throwable) {
             // Can throw SecurityException if canTakeScreenshot was revoked at runtime.
             android.util.Log.e("TrackerService", "takeScreenshot threw", t)
-            persist(repo, timestamp, pkg, description, null, "capture threw ${t.javaClass.simpleName}")
+            persist(repo, timestamp, pkg, description, null, "capture threw ${t.javaClass.simpleName}", eventType)
         }
     }
 
@@ -243,11 +256,13 @@ class TrackerService : AccessibilityService() {
         pkg: String,
         description: String,
         bitmap: Bitmap?,
-        failureNote: String?
+        failureNote: String?,
+        eventType: String = "click"
     ) {
         scope.launch {
             try {
-                repo.record(timestamp, pkg, description, bitmap, tracked = true, failureNote = failureNote)
+                repo.record(timestamp, pkg, description, bitmap, tracked = true,
+                    failureNote = failureNote, eventType = eventType)
             } catch (t: Throwable) {
                 android.util.Log.e("TrackerService", "record failed", t)
             }

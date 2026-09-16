@@ -35,6 +35,14 @@ object AppPrefs {
     // Storage quota (v1.3) — LRU pruning; 0 = unlimited
     const val KEY_QUOTA_MB = "quota_mb"
 
+    // Capture intelligence (v2): pause, screen-off skip
+    const val KEY_PAUSED = "paused"
+    const val KEY_SKIP_SCREEN_OFF = "skip_screen_off"
+
+    // Look & feel (v2): theme + timestamp mode
+    const val KEY_THEME = "theme"                 // system | light | dark | amoled
+    const val KEY_TIME_MODE = "time_mode"         // relative | exact
+
     private fun prefs(context: Context) =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -88,6 +96,18 @@ object AppPrefs {
     fun quotaMb(context: Context): Int =
         prefs(context).getInt(KEY_QUOTA_MB, 0)
 
+    fun paused(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_PAUSED, false)
+
+    fun skipScreenOff(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SKIP_SCREEN_OFF, true)
+
+    fun theme(context: Context): String =
+        prefs(context).getString(KEY_THEME, "system") ?: "system"
+
+    fun timeMode(context: Context): String =
+        prefs(context).getString(KEY_TIME_MODE, "relative") ?: "relative"
+
     // --- Write helpers --------------------------------------------------------
 
     fun setAllowed(context: Context, pkgs: Set<String>) =
@@ -134,4 +154,16 @@ object AppPrefs {
 
     fun setQuotaMb(context: Context, value: Int) =
         prefs(context).edit().putInt(KEY_QUOTA_MB, value).apply()
+
+    fun setPaused(context: Context, value: Boolean) =
+        prefs(context).edit().putBoolean(KEY_PAUSED, value).apply()
+
+    fun setSkipScreenOff(context: Context, value: Boolean) =
+        prefs(context).edit().putBoolean(KEY_SKIP_SCREEN_OFF, value).apply()
+
+    fun setTheme(context: Context, value: String) =
+        prefs(context).edit().putString(KEY_THEME, value).apply()
+
+    fun setTimeMode(context: Context, value: String) =
+        prefs(context).edit().putString(KEY_TIME_MODE, value).apply()
 }

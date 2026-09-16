@@ -23,5 +23,9 @@ data class WorkflowEvent(
     /** 1 when the user's global filter allowed this package, 0 otherwise (kept dimmed). */
     @ColumnInfo(name = "tracked") val tracked: Int = 1,
     /** Why the screenshot is missing, if it is; null when the capture succeeded. */
-    @ColumnInfo(name = "failureNote") val failureNote: String? = null
+    @ColumnInfo(name = "failureNote") val failureNote: String? = null,
+    /** "click" or "switch" — drives the click/switch filter chips. */
+    @ColumnInfo(name = "eventType", defaultValue = "click") val eventType: String = "click",
+    /** Encoded screenshot bytes on disk; feeds the per-app storage breakdown. */
+    @ColumnInfo(name = "imageSizeBytes", defaultValue = "0") val imageSizeBytes: Long = 0L
 )

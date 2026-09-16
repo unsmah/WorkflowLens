@@ -33,9 +33,11 @@ class WorkflowRepository(context: Context) {
         actionDescription: String,
         bitmap: Bitmap?,
         tracked: Boolean,
-        failureNote: String? = null
+        failureNote: String? = null,
+        eventType: String = "click"
     ): Long? = withContext(Dispatchers.IO) {
         // 1) Blob first — if the image cannot be written we still keep the metadata.
+        var imageBytes = 0L
         val imagePath = bitmap?.let {
             val format = AppPrefs.imageFormat(appContext)
             val quality = AppPrefs.imageQuality(appContext)
@@ -54,7 +56,7 @@ class WorkflowRepository(context: Context) {
                 )
             } else null
             ScreenshotStore.save(appContext, it, format, quality, maxDim, overlay)
-        }.orEmpty()
+        }?.also { imageBytes = runCatching { java.io.File(it).length() }.getOrDefault(0L) }.orEmpty()
         // 2) Metadata row second — one Room transaction, safe & synchronous on this dispatcher.
         val id = dao.insert(
             WorkflowEvent(
@@ -63,7 +65,9 @@ class WorkflowRepository(context: Context) {
                 actionDescription = actionDescription,
                 imagePath = imagePath,
                 tracked = if (tracked) 1 else 0,
-                failureNote = failureNote
+                failureNote = failureNote,
+                eventType = eventType,
+                imageSizeBytes = imageBytes
             )
         )
         // 3) Retention + storage quota piggy-back on every record call (no scheduler needed).
@@ -89,6 +93,38 @@ class WorkflowRepository(context: Context) {
         ScreenshotStore.delete(event.imagePath)
         dao.deleteById(id)
         true
+    }
+
+    /** Single row (undo buffer). */
+    suspend fun eventById(id: Long): WorkflowEvent? =
+        withContext(Dispatchers.IO) { dao.byId(id) }
+
+    /** Re-inserts a snapshot without its image (the file was already deleted). */
+    suspend fun reinsertWithoutImage(e: WorkflowEvent): Long = withContext(Dispatchers.IO) {
+        dao.insert(e.copy(id = 0L, imagePath = "", imageSizeBytes = 0L,
+            failureNote = "deleted — restored without screenshot"))
+    }
+
+    /** Deletes a batch of events (rows + files); returns rows removed. */
+    suspend fun deleteEvents(ids: List<Long>): Int = withContext(Dispatchers.IO) {
+        if (ids.isEmpty()) return@withContext 0
+        val rows = dao.observeTimelineSnapshot().filter { it.id in ids }
+        rows.forEach { ScreenshotStore.delete(it.imagePath) }
+        dao.deleteByIds(ids)
+        ids.size
+    }
+
+    /** Events inside a time window — used by share/export. */
+    suspend fun eventsInWindow(from: Long, to: Long): List<WorkflowEvent> =
+        withContext(Dispatchers.IO) { dao.inWindow(from, to) }
+
+    /** Stats payload: histograms + top apps + storage rows. */
+    suspend fun stats(): WorkflowStats = withContext(Dispatchers.IO) {
+        WorkflowStats(
+            timestamps = dao.allTimestamps(),
+            topApps = dao.countsByPackage(),
+            storageRows = dao.storageRows()
+        )
     }
 
     /**
@@ -124,6 +160,10 @@ class WorkflowRepository(context: Context) {
             if (newPath != null) {
                 file?.delete()          // replace the old render
                 dao.updateImagePath(event.id, newPath)
+                dao.updateImageBytes(
+                    event.id,
+                    runCatching { java.io.File(newPath).length() }.getOrDefault(0L)
+                )
                 count++
             }
         }
@@ -140,3 +180,10 @@ class WorkflowRepository(context: Context) {
             }
     }
 }
+
+/** Stats payload assembled by the repository in one IO hop. */
+data class WorkflowStats(
+    val timestamps: List<Long>,
+    val topApps: List<PackageCount>,
+    val storageRows: List<StorageRow>
+)
