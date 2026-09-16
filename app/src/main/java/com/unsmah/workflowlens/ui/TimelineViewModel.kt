@@ -391,7 +391,7 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
                 else if (uris.size == 1) send.putExtra(Intent.EXTRA_STREAM, uris[0])
                 send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 send.putExtra(Intent.EXTRA_TEXT,
-                    rows.joinToString("
+                    rows.joinToString("\n") { it.actionDescription }.take(4000))
 ") { it.actionDescription }.take(4000))
                 context.startActivity(Intent.createChooser(send, "Share ${rows.size} events"))
             }
@@ -416,11 +416,10 @@ class TimelineViewModel(app: Application) : AndroidViewModel(app) {
             z.write("id,timestamp,package,action,type,image
 ".toByteArray())
             for (e in rows) {
-                val q = { v: String -> """ + v.replace(""", """") + """ }
+                val q: (String) -> String = { v -> "\"" + v.replace("\"", "\"\"") + "\"" }
                 z.write(("${e.id},${e.timestamp},${e.packageName}," +
-                    "${q(e.actionDescription)},${e.eventType}," +
-                    "${java.io.File(e.imagePath).name}
-").toByteArray())
+                    q(e.actionDescription) + ",${e.eventType}," +
+                    java.io.File(e.imagePath).name + "\n").toByteArray())
             }
             z.closeEntry()
             for (e in rows) {
